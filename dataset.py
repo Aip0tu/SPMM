@@ -6,7 +6,10 @@ from rdkit import Chem
 import pickle
 from rdkit import RDLogger
 from calc_property import calculate_property
-from pysmilesutils.augment import MolAugmenter
+try:
+    from pysmilesutils.augment import MolAugmenter
+except ImportError:
+    MolAugmenter = None
 RDLogger.DisableLog('rdApp.*')
 
 
@@ -240,10 +243,58 @@ class SMILESDataset_DILI(Dataset):
         return '[CLS]' + smiles, value
 
 
+class SMILESDataset_FluoDB(Dataset):
+    def __init__(self, data_path, target_name=None, value_mean=None, value_std=None, shuffle=False):
+        data = pd.read_csv(data_path)
+        if target_name is None:
+            target_columns = [c for c in data.columns if c not in ['smiles', 'solvent']]
+            if len(target_columns) != 1:
+                raise ValueError(f'Cannot infer target column from {data_path}.')
+            target_name = target_columns[0]
+
+        self.target_name = target_name
+        self.data = []
+        for i in range(len(data)):
+            row = data.iloc[i]
+            if pd.isna(row['smiles']) or pd.isna(row['solvent']) or pd.isna(row[target_name]):
+                continue
+
+            mol = Chem.MolFromSmiles(row['smiles'])
+            solvent_mol = Chem.MolFromSmiles(row['solvent'])
+            if mol is None or solvent_mol is None:
+                continue
+
+            smiles = Chem.MolToSmiles(mol, isomericSmiles=False, canonical=True)
+            solvent = Chem.MolToSmiles(solvent_mol, isomericSmiles=False, canonical=True)
+            self.data.append((smiles, solvent, float(row[target_name])))
+
+        if not self.data:
+            raise ValueError(f'No valid samples found in {data_path}.')
+
+        values = torch.tensor([row[2] for row in self.data], dtype=torch.float)
+        self.value_mean = torch.as_tensor(values.mean() if value_mean is None else value_mean, dtype=torch.float)
+        self.value_std = torch.as_tensor(values.std(unbiased=False) if value_std is None else value_std, dtype=torch.float)
+        if self.value_std.item() == 0:
+            self.value_std = torch.tensor(1.0)
+
+        if shuffle:
+            random.shuffle(self.data)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        smiles, solvent, value = self.data[index]
+        value = (torch.tensor(value, dtype=torch.float) - self.value_mean) / self.value_std
+        return '[CLS]' + smiles, '[CLS]' + solvent, value
+
+
 class SMILESDataset_USPTO(Dataset):
     def __init__(self, data_path, data_length=None, shuffle=False, aug=False):
         self.is_aug = aug
-        self.aug = MolAugmenter()
+        if self.is_aug and MolAugmenter is None:
+            raise ImportError('pysmilesutils is required for USPTO augmentation.')
+        self.aug = MolAugmenter() if MolAugmenter is not None else None
         with open(data_path, 'r') as f:
             lines = f.readlines()
         self.data = [line.strip() for line in lines]
@@ -273,7 +324,9 @@ class SMILESDataset_USPTO_reverse(Dataset):
         data = [data.iloc[i] for i in range(len(data))]
         self.data = [d for d in data if d['set'] == mode]
         self.is_aug = aug
-        self.aug = MolAugmenter()
+        if self.is_aug and MolAugmenter is None:
+            raise ImportError('pysmilesutils is required for USPTO augmentation.')
+        self.aug = MolAugmenter() if MolAugmenter is not None else None
 
         if shuffle:
             random.shuffle(self.data)

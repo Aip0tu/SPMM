@@ -77,6 +77,38 @@ Arguments can be passed with commands, or be edited manually in the running code
     python d_rxn_prediction.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --mode 'retro' --n_beam 3 
     ```
 
+6. FluoDB fluorescence property regression with molecule/solvent dual input
+
+    The project can be extended to support local FluoDB-style data splits where each sample contains `smiles`, `solvent`, and one target column. This repo already works with the local `FlourDB/` directory structure:
+
+    * `abs_train.csv`, `abs_valid.csv`, `abs_test.csv`
+    * `emi_train.csv`, `emi_valid.csv`, `emi_test.csv`
+    * `plqy_train.csv`, `plqy_valid.csv`, `plqy_test.csv`
+    * `e_train.csv`, `e_valid.csv`, `e_test.csv`
+
+    Example:
+    ```
+    python d_fluodb_regression.py --task emi --data_dir './FlourDB' --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --device cuda
+    ```
+
+    Available tasks are `abs`, `emi`, `plqy`, and `e`. The script encodes fluorophore and solvent separately, fuses the two embeddings, and saves the best checkpoint to `./output/FluoDB/`.
+
+7. FluoDB atom-level explanation for trained SPMM regressors
+
+    After training a target-specific model, atom-level token masking can be used to estimate which fluorophore atoms push the predicted property up or down. For example, explain an emission model:
+
+    ```
+    python d_fluodb_explain.py --targets emi --checkpoint './output/FluoDB/emi_best.pth' --fluorophore 'Cc1ccc(C(=O)c2cc(C(=O)O)cc3c2CCN3c2c(Cl)cccc2Cl)cc1' --solvent 'O' --device cpu
+    ```
+
+    To explain all four targets, train all four checkpoints first and then run:
+
+    ```
+    python d_fluodb_explain.py --targets abs emi plqy e --model_dir './output/FluoDB' --fluorophore 'Cc1ccc(C(=O)c2cc(C(=O)O)cc3c2CCN3c2c(Cl)cccc2Cl)cc1' --solvent 'O'
+    ```
+
+    The script writes CSV attribution tables and PNG atom-highlight figures under `./pred/spmm_fluodb_explain/`.
+
 ## Acknowledgement
 * The code for BERT with cross-attention layers `xbert.py` and schedulers are modified from the one in [ALBEF](https://github.com/salesforce/ALBEF).
 * The code for SMILES augmentation is taken from [pysmilesutils](https://github.com/MolecularAI/pysmilesutils).
