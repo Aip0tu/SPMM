@@ -108,6 +108,23 @@
     ```
 
     脚本会将 CSV 归因表和 PNG 原子高亮图写入 `./pred/spmm_fluodb_explain/`。
+8. 优先级最高的优化我建议按这个顺序做：
+
+多任务学习：现在 abs/emi/plqy/e 是四个单独模型。FluoDB 里这些性质有相关性，改成一个模型同时预测 4 个目标，通常会比单任务更稳，尤其是数据不大时。
+
+更强的分子-溶剂融合：现在只是把两个 CLS embedding 拼起来，交互很浅。可以加入 cross-attention、bilinear pooling，或者至少加一个小的交互层，让分子和溶剂 token 级别互相注意，而不是只在最后拼向量。
+
+使用 solvent 物化性质：溶剂只用 SMILES 编码可能不够。可以额外加入介电常数、极性、折射率、H-bond donor/acceptor、ET(30) 等溶剂描述符，再和 solvent embedding 拼接，荧光性质预测会更合理。
+
+SMILES 增广：训练时对 fluorophore 做 randomized SMILES augmentation，可以提升泛化。项目里反应任务已经用过类似思路，FluoDB 这边目前没有做。
+
+训练策略优化：可以加 layer-wise learning rate、先 freeze encoder 再 unfreeze、梯度裁剪、AMP、early stopping、Huber loss。当前只有保存 best checkpoint，没有真正 early stopping。
+
+数据划分更严格：如果当前 train/valid/test 是随机切分，指标可能偏乐观。建议做 scaffold split，甚至 solvent split，用来测试模型对新骨架、新溶剂的泛化能力。
+
+集成模型/不确定性：训练 3-5 个不同 seed 的模型做 ensemble，筛选生成分子时会比单模型可靠很多，也能给出预测方差。
+
+针对目标做变换：plqy 是有界性质，直接 MSE 可能不理想；可以尝试 logit 变换或 beta-like 处理。abs/emi 也可以检查异常值，用 Huber loss 比 MSE 更抗离群点。
 
 ## 致谢
 * `xbert.py` 与 `scheduler` 中带交叉注意力层的 BERT 代码修改自 [ALBEF](https://github.com/salesforce/ALBEF)。
