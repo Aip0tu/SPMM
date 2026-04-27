@@ -1,8 +1,8 @@
-""" Step Scheduler
+"""阶梯式调度器
 
-Basic step LR schedule with warmup, noise.
+带 warmup 和噪声的基础阶梯学习率调度。
 
-Hacked together by / Copyright 2020 Ross Wightman
+原作者 / 版权所有 2020 Ross Wightman
 """
 import math
 import torch

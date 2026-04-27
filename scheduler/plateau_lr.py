@@ -1,8 +1,8 @@
-""" Plateau Scheduler
+"""Plateau 调度器
 
-Adapts PyTorch plateau scheduler and allows application of noise, warmup.
+基于 PyTorch 的 plateau 调度器改写，并支持噪声与 warmup。
 
-Hacked together by / Copyright 2020 Ross Wightman
+原作者 / 版权所有 2020 Ross Wightman
 """
 import torch
 
@@ -10,7 +10,7 @@ from .scheduler import Scheduler
 
 
 class PlateauLRScheduler(Scheduler):
-    """Decay the LR by a factor every time the validation loss plateaus."""
+    """每当验证损失进入平台期时，按给定因子衰减学习率。"""
 
     def __init__(self,
                  optimizer,
@@ -68,19 +68,19 @@ class PlateauLRScheduler(Scheduler):
         if 'last_epoch' in state_dict:
             self.lr_scheduler.last_epoch = state_dict['last_epoch']
 
-    # override the base class step fn completely
+    # 完全重写基类的 step 函数
     def step(self, epoch, metric=None):
         if epoch <= self.warmup_t:
             lrs = [self.warmup_lr_init + epoch * s for s in self.warmup_steps]
             super().update_groups(lrs)
         else:
             if self.restore_lr is not None:
-                # restore actual LR from before our last noise perturbation before stepping base
+                # 在执行基础调度器 step 前，先恢复上一次噪声扰动前的真实学习率
                 for i, param_group in enumerate(self.optimizer.param_groups):
                     param_group['lr'] = self.restore_lr[i]
                 self.restore_lr = None
 
-            self.lr_scheduler.step(metric, epoch)  # step the base scheduler
+            self.lr_scheduler.step(metric, epoch)  # 执行基础调度器的 step
 
             if self.noise_range is not None:
                 if isinstance(self.noise_range, (list, tuple)):
@@ -95,15 +95,15 @@ class PlateauLRScheduler(Scheduler):
         g.manual_seed(self.noise_seed + epoch)
         if self.noise_type == 'normal':
             while True:
-                # resample if noise out of percent limit, brute force but shouldn't spin much
+                # 若噪声超出百分比限制则重新采样；虽然是穷举式重试，但通常不会循环太久
                 noise = torch.randn(1, generator=g).item()
                 if abs(noise) < self.noise_pct:
                     break
         else:
             noise = 2 * (torch.rand(1, generator=g).item() - 0.5) * self.noise_pct
 
-        # apply the noise on top of previous LR, cache the old value so we can restore for normal
-        # stepping of base scheduler
+        # 在先前学习率基础上施加噪声，并缓存旧值以便后续恢复
+        # 以便基础调度器正常继续更新
         restore_lr = []
         for i, param_group in enumerate(self.optimizer.param_groups):
             old_lr = float(param_group['lr'])

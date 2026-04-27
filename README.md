@@ -1,7 +1,7 @@
-# SPMM: Structure-Property Multi-Modal learning for molecules
+# SPMM：面向分子的结构-性质多模态学习
 
-The official GitHub for SPMM, a multi-modal molecular pre-trained model for a synergistic comprehension of molecular structure and properties.
-The details can be found in the following paper: 
+这是 SPMM 的官方 GitHub 仓库。SPMM 是一个多模态分子预训练模型，用于协同理解分子结构与性质。
+详细内容可参考以下论文：
 *Bidirectional Generation of Structure and Properties Through a Single Molecular Foundation Model. ([Nature Communications 2024](https://www.nature.com/articles/s41467-024-46440-3))*
 
 [![DOI](https://zenodo.org/badge/542878783.svg)](https://zenodo.org/doi/10.5281/zenodo.10567598)
@@ -10,53 +10,53 @@ The details can be found in the following paper:
 
 ![method1](https://github.com/jinhojsk515/SPMM/assets/59189526/1ff52950-aa12-481f-94ea-4d1e97ac7bf3)
 
-Molecule structure will be given in SMILES, and we used 53 simple chemical properties to build a property vector(PV) of a molecule.
+分子结构以 SMILES 表示，我们使用 53 个简单化学性质构建分子的性质向量（PV）。
 
-***<ins>The model checkpoint and data are too heavy to be included in this repo, and they can be found [here](https://drive.google.com/drive/folders/1ARrSg9kXdXAL5VGgDBwizpSgcJwauPua?usp=sharing).<ins>***
+***<ins>模型检查点和数据体积较大，未直接包含在本仓库中，可从[这里](https://drive.google.com/drive/folders/1ARrSg9kXdXAL5VGgDBwizpSgcJwauPua?usp=sharing)下载。<ins>***
 
-## Files
-* `data/`: Contains the data used for the experiments in the paper. (you have to make this folder and put the data that you downloaded from the link above.)
-* `Pretrain/`: Contains the checkpoint of the pre-trained SPMM. (you have to make this folder and put the checkpoint that you downloaded from the link above.)
-* `vocab_bpe_300.txt`: Contains the SMILES tokens for the SMILES tokenizer.
-* `property_name.txt`: Contains the name of the 53 chemical properties.
-* `normalize.pkl`: Contains the mean and standard deviation of the 53 chemical properties that we used for PV.
-* `calc_property.py`: Contains the code to calculate the 53 chemical properties and build a PV for a given SMILES. **Modify this code accordingly to utilize SPMM pre-training for your custom PVs.**
-* `SPMM_models.py`: Contains the code for the SPMM model and its pre-training codes.
-* `SPMM_pretrain.py`: runs SPMM pre-training.
-* `d_*.py`: Codes for the downstream tasks.
+## 文件说明
+* `data/`：保存论文实验所使用的数据。（需要你自行创建该目录，并放入上方链接下载的数据。）
+* `Pretrain/`：保存预训练好的 SPMM 检查点。（需要你自行创建该目录，并放入上方链接下载的检查点。）
+* `vocab_bpe_300.txt`：SMILES 分词器使用的 SMILES token 表。
+* `property_name.txt`：53 个化学性质的名称。
+* `normalize.pkl`：构建 PV 时使用的 53 个化学性质的均值与标准差。
+* `calc_property.py`：用于计算 53 个化学性质，并根据给定 SMILES 构建 PV。**如果你要将 SPMM 预训练用于自定义 PV，请按需修改此文件。**
+* `SPMM_models.py`：SPMM 模型及其预训练代码。
+* `SPMM_pretrain.py`：用于运行 SPMM 预训练。
+* `d_*.py`：下游任务脚本。
 
-## Requirements
-Run `pip install -r requirements.txt` to install the required packages.
+## 环境依赖
+运行 `pip install -r requirements.txt` 安装所需依赖。
 
-## Code running
-Arguments can be passed with commands, or be edited manually in the running code.
+## 运行方法
+参数既可以通过命令行传入，也可以直接在脚本中手动修改。
 
-1. Pre-training
+1. 预训练
     ```
     python SPMM_pretrain.py --data_path './data/pretrain.txt'
     ```
 
-2. PV-to-SMILES generation
-   * batched: The model takes PVs from the molecules in `input_file`, and generates molecules with those PVs using k-beam search. The generated molecules will be written in `generated_molecules.txt`.
+2. PV 到 SMILES 生成
+   * batched：模型会读取 `input_file` 中分子的 PV，并使用 k-beam search 生成具有这些 PV 的分子。生成结果会写入 `generated_molecules.txt`。
        ```
        python d_pv2smiles_batched.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --input_file './data/pubchem_1k_unseen.txt' --k 2
        ```
-   * single: The model takes one query PV and generates `n_generate` molecules with that PV using k-beam search. The generated molecules will be written in `generated_molecules.txt`. Here, you need to build your input PV in the file `p2s_input.csv`. Check the four examples that we included.
+   * single：模型接收一个查询 PV，并使用 k-beam search 生成 `n_generate` 个满足该 PV 的分子。生成结果会写入 `generated_molecules.txt`。你需要先在 `p2s_input.csv` 中构建输入 PV，可参考仓库提供的四个示例。
        ```
        python d_pv2smiles_single.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --n_generate 1000 --stochastic True --k 2
        ```
 
-3. SMILES-to-PV generation
-    
-    The model takes the query molecules in `input_file`, and generates their PV.
+3. SMILES 到 PV 生成
+
+    模型会读取 `input_file` 中的查询分子，并生成对应的 PV。
 
     ```
     python d_smiles2pv.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --input_file './data/pubchem_1k_unseen.txt'
     ```
 
-4. MoleculeNet + DILI prediction task
+4. MoleculeNet + DILI 预测任务
 
-    `d_regression.py`, `d_classification.py`, and `d_classification_multilabel.py`, perform regression, binary classification, and multi-label classification tasks, respectively.
+    `d_regression.py`、`d_classification.py` 和 `d_classification_multilabel.py` 分别对应回归、二分类和多标签分类任务。
 
     ```
     python d_regression.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --name 'bace'
@@ -64,51 +64,51 @@ Arguments can be passed with commands, or be edited manually in the running code
     python d_classification_multilabel.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --name 'clintox'
     ```
 
-5. Forward/retro-reaction prediction tasks
+5. 正向/逆向反应预测任务
 
-    `d_rxn_prediction.py` performs both forward/reverse reaction prediction tasks on USPTO-480k and USPTO-50k datasets.
+    `d_rxn_prediction.py` 可在 USPTO-480k 和 USPTO-50k 数据集上执行正向反应预测与逆合成预测。
 
-    e.g. forward reaction prediction, no beam search
+    例如：正向反应预测，不使用 beam search
     ```
     python d_rxn_prediction.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --mode 'forward' --n_beam 1 
     ```
-    e.g. retro reaction prediction, beam search with k=3
+    例如：逆反应预测，使用 k=3 的 beam search
     ```
     python d_rxn_prediction.py --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --mode 'retro' --n_beam 3 
     ```
 
-6. FluoDB fluorescence property regression with molecule/solvent dual input
+6. 使用分子/溶剂双输入的 FluoDB 荧光性质回归
 
-    The project can be extended to support local FluoDB-style data splits where each sample contains `smiles`, `solvent`, and one target column. This repo already works with the local `FlourDB/` directory structure:
+    项目已经可以扩展为支持本地 FluoDB 风格的数据划分，其中每个样本包含 `smiles`、`solvent` 以及一个目标列。当前仓库已兼容本地 `FlourDB/` 目录结构：
 
     * `abs_train.csv`, `abs_valid.csv`, `abs_test.csv`
     * `emi_train.csv`, `emi_valid.csv`, `emi_test.csv`
     * `plqy_train.csv`, `plqy_valid.csv`, `plqy_test.csv`
     * `e_train.csv`, `e_valid.csv`, `e_test.csv`
 
-    Example:
+    示例：
     ```
     python d_fluodb_regression.py --task emi --data_dir './FlourDB' --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --device cuda
     ```
 
-    Available tasks are `abs`, `emi`, `plqy`, and `e`. The script encodes fluorophore and solvent separately, fuses the two embeddings, and saves the best checkpoint to `./output/FluoDB/`.
+    可选任务包括 `abs`、`emi`、`plqy` 和 `e`。脚本会分别编码荧光团与溶剂，再融合两者嵌入，并将最佳检查点保存到 `./output/FluoDB/`。
 
-7. FluoDB atom-level explanation for trained SPMM regressors
+7. 面向已训练 SPMM 回归器的 FluoDB 原子级解释
 
-    After training a target-specific model, atom-level token masking can be used to estimate which fluorophore atoms push the predicted property up or down. For example, explain an emission model:
+    在训练好目标相关模型后，可以通过原子级 token masking 估计哪些荧光团原子会推动预测性质升高或降低。下面给出发射模型的解释示例：
 
     ```
     python d_fluodb_explain.py --targets emi --checkpoint './output/FluoDB/emi_best.pth' --fluorophore 'Cc1ccc(C(=O)c2cc(C(=O)O)cc3c2CCN3c2c(Cl)cccc2Cl)cc1' --solvent 'O' --device cpu
     ```
 
-    To explain all four targets, train all four checkpoints first and then run:
+    若要同时解释四个目标，请先训练四个检查点，然后运行：
 
     ```
     python d_fluodb_explain.py --targets abs emi plqy e --model_dir './output/FluoDB' --fluorophore 'Cc1ccc(C(=O)c2cc(C(=O)O)cc3c2CCN3c2c(Cl)cccc2Cl)cc1' --solvent 'O'
     ```
 
-    The script writes CSV attribution tables and PNG atom-highlight figures under `./pred/spmm_fluodb_explain/`.
+    脚本会将 CSV 归因表和 PNG 原子高亮图写入 `./pred/spmm_fluodb_explain/`。
 
-## Acknowledgement
-* The code for BERT with cross-attention layers `xbert.py` and schedulers are modified from the one in [ALBEF](https://github.com/salesforce/ALBEF).
-* The code for SMILES augmentation is taken from [pysmilesutils](https://github.com/MolecularAI/pysmilesutils).
+## 致谢
+* `xbert.py` 与 `scheduler` 中带交叉注意力层的 BERT 代码修改自 [ALBEF](https://github.com/salesforce/ALBEF)。
+* SMILES 增广代码来自 [pysmilesutils](https://github.com/MolecularAI/pysmilesutils)。

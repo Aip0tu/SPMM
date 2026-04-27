@@ -25,7 +25,7 @@ class AttrDict(dict):
 
 
 def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device, scheduler):
-    # train
+    # 训练
     model.train()
 
     header = 'Train Epoch: [{}]'.format(epoch)
@@ -54,12 +54,12 @@ def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device,
 
 @torch.no_grad()
 def evaluate(model, data_loader, tokenizer, device):
-    # test
+    # 测试
     model.eval()
 
     reference, candidate = [], []
     for (text, product) in data_loader:
-        product_input = torch.tensor([tokenizer.cls_token_id]).expand(len(text), 1).to(device)  # batch*1
+        product_input = torch.tensor([tokenizer.cls_token_id]).expand(len(text), 1).to(device)  # 张量形状：批大小 * 1
         text_input = tokenizer(text, padding='longest', max_length=150, return_tensors="pt").to(device)
         text_embeds = model.text_encoder2.bert(text_input.input_ids[:, 1:], attention_mask=text_input.attention_mask[:, 1:], return_dict=True,
                                                mode='text').last_hidden_state
@@ -81,10 +81,10 @@ def evaluate(model, data_loader, tokenizer, device):
     return reference, candidate
 
 
-# beam search
+# 束搜索
 @torch.no_grad()
 def evaluate_beam(model, data_loader, tokenizer, device, k=3):
-    # test
+    # 测试
     model.eval()
     reference, candidate = [], []
     for (text, product) in tqdm(data_loader):
@@ -148,14 +148,14 @@ def metric_eval(ref, cand):
 def main(args, config):
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
+    # 固定随机种子以保证结果可复现
     seed = random.randint(0, 1000)
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     cudnn.benchmark = True
 
-    # === Dataset === #
+    # === 数据集 === #
     print("Creating dataset")
     if args.mode == 'forward':
         dataset_train = SMILESDataset_USPTO('./data/6_RXNprediction/USPTO-480k/train_parsed.txt', data_length=None, aug=True)
@@ -177,7 +177,7 @@ def main(args, config):
     tokenizer = BertTokenizer(vocab_file='vocab_bpe_300.txt', do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # === Model === #
+    # === 模型 === #
     print("Creating model")
     model = SPMM_rxn(config=config, cp=args.checkpoint)
     print('#parameters:', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -199,7 +199,7 @@ def main(args, config):
 
         msg = model.load_state_dict(state_dict, strict=False)
         print('load checkpoint from %s' % args.checkpoint)
-        # print(msg)
+        # 可取消注释以打印加载信息
     model = model.to(device)
 
     arg_opt = config['optimizer']
@@ -258,9 +258,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_dir', default='./output/RXN')
     parser.add_argument('--checkpoint', default='./Pretrain/checkpoint_SPMM_20m.ckpt')
-    parser.add_argument('--mode', default='forward', type=str)          # 'forward' or 'retro'
-    parser.add_argument('--evaluate', default=False, type=bool)          # if True, only evaluate the model on valid&test set (skip training)
-    parser.add_argument('--n_beam', default=5, type=int)                # if >1, use beam search to generate output
+    parser.add_argument('--mode', default='forward', type=str)          # 可选 'forward' 或 'retro'
+    parser.add_argument('--evaluate', default=False, type=bool)          # 若为 True，则只在验证集和测试集上评估模型（跳过训练）
+    parser.add_argument('--n_beam', default=5, type=int)                # 若大于 1，则使用束搜索生成输出
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--min_lr', default=5e-6, type=float)

@@ -1,8 +1,8 @@
-""" TanH Scheduler
+"""TanH 调度器
 
-TanH schedule with warmup, cycle/restarts, noise.
+带 warmup、周期/重启和噪声的 TanH 学习率调度。
 
-Hacked together by / Copyright 2020 Ross Wightman
+原作者 / 版权所有 2020 Ross Wightman
 """
 import logging
 import math
@@ -17,8 +17,8 @@ _logger = logging.getLogger(__name__)
 
 class TanhLRScheduler(Scheduler):
     """
-    Hyberbolic-Tangent decay with restarts.
-    This is described in the paper https://arxiv.org/abs/1806.01593
+    带重启的双曲正切衰减。
+    相关方法可参考论文 https://arxiv.org/abs/1806.01593 。
     """
 
     def __init__(self,

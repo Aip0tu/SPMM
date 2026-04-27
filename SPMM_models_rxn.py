@@ -12,7 +12,7 @@ class SPMM_rxn(nn.Module):
         self.text_encoder = BertForMaskedLM(config=BertConfig.from_json_file(config['bert_config_text']))
         self.text_encoder2 = BertForMaskedLM(config=BertConfig.from_json_file(config['bert_config_smiles']))
 
-        # copy weights of checkpoint's SMILES encoder to text_encoder2
+        # 将检查点中的 SMILES 编码器权重复制到 text_encoder2
         if cp:
             checkpoint = torch.load(cp, map_location='cpu')
             try:
@@ -25,7 +25,7 @@ class SPMM_rxn(nn.Module):
                     state_dict[new_key] = state_dict[key]
                 del state_dict[key]
             msg = self.text_encoder2.load_state_dict(state_dict, strict=False)
-            # print(msg)
+            # 可取消注释以打印加载信息
             del state_dict
 
     def forward(self, text_input_ids, text_attention_mask, product_input_ids, product_attention_mask):
@@ -55,10 +55,10 @@ class SPMM_rxn(nn.Module):
                                          return_dict=True,
                                          is_decoder=True,
                                          return_logits=True,
-                                         )[:, -1, :]  # batch*300
+                                         )[:, -1, :]  # 张量形状：批大小 * 300
         if k:
             p = torch.softmax(token_output, dim=-1)
-            output = torch.topk(p, k=k, dim=-1)  # batch*k
+            output = torch.topk(p, k=k, dim=-1)  # 张量形状：批大小 * k
             return torch.log(output.values), output.indices
         if stochastic:
             p = torch.softmax(token_output, dim=-1)
@@ -66,4 +66,4 @@ class SPMM_rxn(nn.Module):
             token_output = m.sample()
         else:
             token_output = torch.argmax(token_output, dim=-1)
-        return token_output.unsqueeze(1)  # batch*1
+        return token_output.unsqueeze(1)  # 张量形状：批大小 * 1

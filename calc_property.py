@@ -23,7 +23,7 @@ def calculate_property(smiles):
     mol = Chem.MolFromSmiles(smiles)
     output = []
     for i, descriptor in enumerate(descriptor_dict):
-        # print(descriptor)
+        # 调试时可取消注释以打印当前描述符
         output.append(descriptor_dict[descriptor](mol))
     return torch.tensor(output, dtype=torch.float)
 

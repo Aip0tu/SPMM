@@ -33,14 +33,14 @@ def generate(model, image_embeds, text, stochastic=True, prop_att_mask=None, k=N
                                       return_dict=True,
                                       is_decoder=True,
                                       return_logits=True,
-                                      )[:, -1, :]  # batch*300
+                                      )[:, -1, :]  # 张量形状：批大小 * 300
     if k:
         p = torch.softmax(token_output, dim=-1)
         if stochastic:
             output = torch.multinomial(p, num_samples=k, replacement=False)
             return torch.log(torch.stack([p[i][output[i]] for i in range(output.size(0))])), output
         else:
-            output = torch.topk(p, k=k, dim=-1)  # batch*k
+            output = torch.topk(p, k=k, dim=-1)  # 张量形状：批大小 * k
             return torch.log(output.values), output.indices
     if stochastic:
         p = torch.softmax(token_output, dim=-1)
@@ -48,14 +48,14 @@ def generate(model, image_embeds, text, stochastic=True, prop_att_mask=None, k=N
         token_output = m.sample()
     else:
         token_output = torch.argmax(token_output, dim=-1)
-    return token_output.unsqueeze(1)  # batch*1
+    return token_output.unsqueeze(1)  # 张量形状：批大小 * 1
 
 
 @torch.no_grad()
 def generate_with_property(model, properties, n_sample, prop_mask, k=2, stochastic=True):
     device = model.device
     tokenizer = model.tokenizer
-    # test
+    # 测试
     model.eval()
     print(f"PV-to-SMILES generation in {'stochastic' if stochastic else 'deterministic'} manner with k={k}...")
 
@@ -66,20 +66,20 @@ def generate_with_property(model, properties, n_sample, prop_mask, k=2, stochast
     prop = properties.unsqueeze(0).repeat(1, 1)
     prop = prop.to(device, non_blocking=True)
 
-    property1 = model.property_embed(prop.unsqueeze(2))  # batch*12*feature
+    property1 = model.property_embed(prop.unsqueeze(2))  # 张量形状：批大小 * 12 * 特征维
 
     property_unk = model.property_mask.expand(property1.size(0), property1.size(1), -1)
     mpm_mask_expand = prop_mask.unsqueeze(0).unsqueeze(2).repeat(property_unk.size(0), 1, property_unk.size(2)).to(device)
     property_masked = property1 * (1 - mpm_mask_expand) + property_unk * mpm_mask_expand
 
     properties = torch.cat([model.property_cls.expand(property_masked.size(0), -1, -1), property_masked], dim=1)
-    prop_embeds = model.property_encoder(inputs_embeds=properties, return_dict=True).last_hidden_state  # batch*len(=patch**2+1)*feature
+    prop_embeds = model.property_encoder(inputs_embeds=properties, return_dict=True).last_hidden_state  # 张量形状：批大小 * 序列长度(=patch**2+1) * 特征维
 
     candidate = []
     for _ in tqdm(range(n_sample)):
         product_input = torch.tensor([tokenizer.cls_token_id]).expand(1, 1).to(device)
         values, indices = generate(model, prop_embeds, product_input, stochastic=stochastic, k=k)
-        # print(values, indices, values.size(), indices.size())
+        # 调试时可取消注释以打印候选得分与索引
         product_input = torch.cat([torch.tensor([tokenizer.cls_token_id]).expand(k, 1).to(device), indices.squeeze(0).unsqueeze(-1)], dim=-1)
         current_p = values.squeeze(0)
         final_output = []
@@ -152,7 +152,7 @@ def metric_eval(prop_input, cand, mask):
 def main(args, config):
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
+    # 固定随机种子以保证结果可复现
     seed = random.randint(0, 1000)
     print('seed:', seed, args.stochastic)
     torch.manual_seed(seed)
@@ -163,7 +163,7 @@ def main(args, config):
     tokenizer = BertTokenizer(vocab_file=args.vocab_filename, do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # === Model === #
+    # === 模型 === #
     print("Creating model")
     model = SPMM(config=config, tokenizer=tokenizer, no_train=True)
 
@@ -188,23 +188,23 @@ def main(args, config):
         for idx, line in enumerate(f):
             property_to_index[line.strip()] = idx
 
-    '''condition for stochastic molecule generation with a file s2p_input.csv'''
+    '''使用 s2p_input.csv 文件进行随机分子生成的条件'''
     prop_mask, prop_input = torch.ones(53), torch.zeros(53)
     for idx, row in pd.read_csv('./p2s_input.csv').iterrows():
         prop_input[property_to_index[row['property']]] = float(row['input_value'])
         prop_mask[property_to_index[row['property']]] = 0
     
-    '''condition for stochastic molecule generation of Fig.2-(a)'''
-    # prop_mask = torch.zeros(53)  # 0 indicates no masking for that property
+    '''图 2-(a) 的随机分子生成条件'''
+    # prop_mask = torch.zeros(53)  # 0 表示该性质不做掩码
     # prop_input = calculate_property('COc1cccc(NC(=O)CN(C)C(=O)COC(=O)c2cc(c3cccs3)nc3ccccc23)c1')
 
-    '''condition for stochastic molecule generation of Fig.2-(b)'''
-    # prop_mask = torch.ones(53)        # 1 indicates masking for that property
+    '''图 2-(b) 的随机分子生成条件'''
+    # prop_mask = torch.ones(53)        # 1 表示该性质使用掩码
     # prop_mask[14] = 0
     # prop_input = torch.zeros(53)
     # prop_input[14] = 150
 
-    '''condition for stochastic molecule generation of Fig.2-(c)'''
+    '''图 2-(c) 的随机分子生成条件'''
     # prop_mask = torch.ones(53)
     # prop_mask[[50, 40, 51, 52]] = 0
     # prop_input = torch.zeros(53)
@@ -213,7 +213,7 @@ def main(args, config):
     # prop_input[51] = 30
     # prop_input[52] = 0.8
 
-    '''condition for stochastic molecule generation of Fig.2-(d)'''
+    '''图 2-(d) 的随机分子生成条件'''
     # prop_mask = torch.ones(53)
     # prop_input = torch.zeros(53)
 

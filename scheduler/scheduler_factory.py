@@ -1,5 +1,5 @@
-""" Scheduler Factory
-Hacked together by / Copyright 2020 Ross Wightman
+"""调度器工厂
+原作者 / 版权所有 2020 Ross Wightman
 """
 from .cosine_lr import CosineLRScheduler
 from .tanh_lr import TanhLRScheduler

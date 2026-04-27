@@ -50,7 +50,7 @@ class SPMM_regressor(nn.Module):
 
 
 def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device, scheduler):
-    # train
+    # 训练
     model.train()
 
     header = 'Train Epoch: [{}]'.format(epoch)
@@ -77,7 +77,7 @@ def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device,
 
 @torch.no_grad()
 def evaluate(model, data_loader, tokenizer, device, denormalize=None):
-    # test
+    # 测试
     model.eval()
     preds = []
     answers = []
@@ -106,7 +106,7 @@ def main(args, config):
     device = torch.device(args.device)
     print('DATASET:', args.name)
 
-    # === Dataset === #
+    # === 数据集 === #
     print("Creating dataset")
     name = args.name
     if name == 'bace':
@@ -138,14 +138,14 @@ def main(args, config):
     tokenizer = BertTokenizer(vocab_file=args.vocab_filename, do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # fix the seed for reproducibility
+    # 固定随机种子以保证结果可复现
     seed = args.seed if args.seed else random.randint(0, 100)
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     cudnn.benchmark = True
 
-    # === Model === #
+    # === 模型 === #
     print("Creating model")
     model = SPMM_regressor(config=config, tokenizer=tokenizer)
     print('#parameters:', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -161,7 +161,7 @@ def main(args, config):
                 del state_dict[key]
         msg = model.load_state_dict(state_dict, strict=False)
         print('load checkpoint from %s' % args.checkpoint)
-        # print(msg)
+        # 可取消注释以打印加载信息
 
     model = model.to(device)
     arg_opt = config['optimizer']

@@ -11,7 +11,7 @@ from transformers import BertTokenizer, WordpieceTokenizer
 
 def main(args, config):
     ngpu=8
-    # data
+    # 数据
     print("Creating dataset")
     dataset = SMILESDataset_pretrain(args.data_path, data_length=[0, 50000000])
     print('#data:', len(dataset), torch.cuda.is_available())
@@ -19,17 +19,17 @@ def main(args, config):
     tokenizer = BertTokenizer(vocab_file=args.vocab_filename, do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # model
+    # 模型
     model = SPMM(config=config, tokenizer=tokenizer, loader_len=len(data_loader) // torch.cuda.device_count())
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, map_location='cpu')
         _ = model.load_state_dict(checkpoint['state_dict'], strict=False)
 
-    # training
+    # 训练
     checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath=args.output_dir, filename='checkpoint_{epoch}',
-                                                       #save_top_k=2, 
-                                                       #monitor='epoch',
-                                                       #every_n_epochs=1,
+                                                       # 可按需设置保留的最佳检查点数量：save_top_k=2, 
+                                                       # 可按需设置监控指标：monitor='epoch',
+                                                       # 可按需设置每隔多少个 epoch 保存一次：every_n_epochs=1,
                                                        every_n_train_steps=10000,
                                                        )
     trainer = pl.Trainer(accelerator='gpu', devices=ngpu, precision='16-mixed', max_epochs=config['schedular']['epochs'],
@@ -40,7 +40,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default='')
-    # parser.add_argument('--data_path', default='./data/1_Pretrain/pretrain_20m.txt')
+    # 可切换到原始预训练数据路径：parser.add_argument('--data_path', default='./data/1_Pretrain/pretrain_20m.txt')
     parser.add_argument('--data_path', default='./data/chemformer_parsed2_shuffle.txt')
     parser.add_argument('--resume', default=False, type=bool)
     parser.add_argument('--output_dir', default='./Pretrain')

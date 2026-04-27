@@ -41,9 +41,9 @@ class SPMM(pl.LightningModule):
                                                nn.LayerNorm(property_width, bert_config.layer_norm_eps),
                                                nn.Linear(property_width, 1))
         self.property_cls = nn.Parameter(torch.zeros(1, 1, property_width))
-        self.property_mask = nn.Parameter(torch.zeros(1, 1, property_width))    # unk token for PV
+        self.property_mask = nn.Parameter(torch.zeros(1, 1, property_width))    # PV 的未知/掩码标记向量
 
-        # create momentum models
+        # 创建动量模型
         self.property_encoder_m = BertForMaskedLM(config=bert_config2).bert
         self.property_proj_m = nn.Linear(property_width, embed_dim)
         self.text_encoder_m = BertForMaskedLM(config=bert_config)
@@ -61,7 +61,7 @@ class SPMM(pl.LightningModule):
 
         self.copy_params()
 
-        # create the queue
+        # 创建队列
         if not no_train:
             self.temp = nn.Parameter(torch.ones([]) * config['temp'])
             self.mlm_probability = config['mlm_probability']
@@ -82,7 +82,7 @@ class SPMM(pl.LightningModule):
         property_feature = self.property_embed(property_original.unsqueeze(2))
 
         unk_tokens = self.property_mask.expand(property_original.size(0), property_original.size(1), -1)
-        mpm_mask = torch.bernoulli(torch.ones_like(property_original) * 0.5)    # 1 for mask, 0 for keep
+        mpm_mask = torch.bernoulli(torch.ones_like(property_original) * 0.5)    # 1 表示掩码，0 表示保留
         mpm_mask_expand = mpm_mask.unsqueeze(2).repeat(1, 1, unk_tokens.size(2))
         property_masked = property_feature * (1 - mpm_mask_expand) + unk_tokens * mpm_mask_expand
         properties = torch.cat([self.property_cls.expand(property_original.size(0), -1, -1), property_masked], dim=1)
@@ -93,7 +93,7 @@ class SPMM(pl.LightningModule):
 
         text_embeds = self.text_encoder.bert(text_input_ids, attention_mask=text_attention_mask, return_dict=True, mode='text').last_hidden_state
         text_feat = F.normalize(self.text_proj(text_embeds[:, 0, :]), dim=-1)
-        # get momentum features
+        # 获取动量分支特征
 
         with torch.no_grad():
             self._momentum_update()
@@ -132,8 +132,8 @@ class SPMM(pl.LightningModule):
         if torch.isnan(sim_i2t).any() or torch.isnan(sim_t2i).any() or torch.isnan(loss_ita):
             return torch.tensor(0.), torch.tensor(0.), torch.tensor(0.), torch.tensor(0.)
 
-        # ================ ITM ================= #
-        # forward the positve image-text pair
+        # ================ ITM 对齐任务 ================= #
+        # 前向计算正样本的性质-文本配对
         pos_pos_prop = self.text_encoder.bert(encoder_embeds=prop_embeds,
                                               attention_mask=prop_atts,
                                               encoder_hidden_states=text_embeds,
@@ -153,21 +153,21 @@ class SPMM(pl.LightningModule):
 
         with torch.no_grad():
             bs = properties.size(0)
-            # hard
+            # 硬负样本
             weights_i2t = F.softmax(sim_i2t[:, :bs], dim=1)
             weights_t2i = F.softmax(sim_t2i[:, :bs], dim=1)
 
             weights_i2t.fill_diagonal_(0)
             weights_t2i.fill_diagonal_(0)
 
-        # select a negative image for each text
+        # 为每个文本选择一个负性质表示
         prop_embeds_neg = []
         for b in range(bs):
             neg_idx = torch.multinomial(weights_t2i[b], 1).item()
             prop_embeds_neg.append(prop_embeds[neg_idx])
         prop_embeds_neg = torch.stack(prop_embeds_neg, dim=0)
 
-        # select a negative text for each image
+        # 为每个性质表示选择一个负文本
         text_embeds_neg = []
         text_atts_neg = []
         for b in range(bs):
@@ -207,7 +207,7 @@ class SPMM(pl.LightningModule):
 
         self._dequeue_and_enqueue(prop_feat_m, text_feat_m)
 
-        # ================= MLM ================= #
+        # ================= MLM 任务 ================= #
         input_ids = text_input_ids.clone()
         labels = input_ids.clone()[:, 1:]
 
@@ -237,7 +237,7 @@ class SPMM(pl.LightningModule):
         loss_distill_text = loss_distill_text[labels != 0].mean()
         loss_mlm = (1 - alpha) * loss_mlm + alpha * loss_distill_text
 
-        # ================= MPM ================= #
+        # ================= MPM 任务 ================= #
         target = property_original.clone()
         prop_embeds_causal = self.property_encoder(inputs_embeds=properties, is_decoder=True, return_dict=True).last_hidden_state
         prop_output = self.text_encoder.bert(encoder_embeds=prop_embeds_causal,
@@ -259,8 +259,8 @@ class SPMM(pl.LightningModule):
     def copy_params(self):
         for model_pair in self.model_pairs:
             for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
-                param_m.data.copy_(param.data)  # initialize
-                param_m.requires_grad = False  # not update by gradient
+                param_m.data.copy_(param.data)  # 初始化
+                param_m.requires_grad = False  # 不通过梯度更新
 
     @torch.no_grad()
     def _momentum_update(self):
@@ -276,12 +276,12 @@ class SPMM(pl.LightningModule):
         batch_size = img_feats.shape[0]
 
         ptr = int(self.queue_ptr)
-        assert self.queue_size % batch_size == 0  # for simplicity
+        assert self.queue_size % batch_size == 0  # 为了简化实现
 
-        # replace the keys at ptr (dequeue and enqueue)
+        # 在 ptr 位置替换队列键值（出队并入队）
         self.prop_queue[:, ptr:ptr + batch_size] = img_feats.T
         self.text_queue[:, ptr:ptr + batch_size] = text_feats.T
-        ptr = (ptr + batch_size) % self.queue_size  # move pointer
+        ptr = (ptr + batch_size) % self.queue_size  # 移动指针
 
         self.queue_ptr[0] = ptr
 
@@ -293,17 +293,17 @@ class SPMM(pl.LightningModule):
         masked_indices[input_ids == self.tokenizer.cls_token_id] = False
 
         if targets is not None:
-            targets[~masked_indices] = -100  # We only compute loss on masked tokens
+            targets[~masked_indices] = -100  # 只在被掩码的 token 上计算损失
 
-        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        # 80% 的情况下，将被掩码的输入 token 替换为 tokenizer.mask_token（[MASK]）
         indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
         input_ids[indices_replaced] = self.tokenizer.mask_token_id
 
-        # 10% of the time, we replace masked input tokens with random word
+        # 10% 的情况下，将被掩码的输入 token 替换为随机词
         indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
         random_words = torch.randint(vocab_size, input_ids.shape, dtype=torch.long).to(device)
         input_ids[indices_random] = random_words[indices_random]
-        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        # 剩余 10% 的情况下，保持被掩码的输入 token 不变
 
         if targets is not None:
             return input_ids, targets
@@ -318,17 +318,17 @@ class SPMM(pl.LightningModule):
         masked_indices[input_ids == self.tokenizer.cls_token_id] = False
 
         if targets is not None:
-            targets[~masked_indices] = -100  # We only compute loss on masked tokens
+            targets[~masked_indices] = -100  # 只在被掩码的 token 上计算损失
 
-        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        # 80% 的情况下，将被掩码的输入 token 替换为 tokenizer.mask_token（[MASK]）
         indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
         input_ids[indices_replaced] = self.tokenizer.mask_token_id
 
-        # 10% of the time, we replace masked input tokens with random word
+        # 10% 的情况下，将被掩码的输入 token 替换为随机词
         indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
         random_words = torch.randint(vocab_size, input_ids.shape, dtype=torch.long).to(device)
         input_ids[indices_random] = random_words[indices_random]
-        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        # 剩余 10% 的情况下，保持被掩码的输入 token 不变
 
         if targets is not None:
             return input_ids, targets
@@ -351,7 +351,7 @@ class SPMM(pl.LightningModule):
         optimizer.zero_grad()
         prop, text = train_batch
         text_input = self.tokenizer(text, padding='longest', truncation=True, max_length=100, return_tensors="pt").to(prop.device)
-        # print(text_input.input_ids[:4], prop[:4], text_input.input_ids.shape)
+        # 调试时可取消注释以打印输入 token 与性质向量
         alpha = self.config['alpha'] if self.current_epoch > 0 else self.config['alpha'] * min(1., batch_idx / self.loader_len)
 
         loss_mlm, loss_mpm, loss_ita, loss_itm = self(prop, text_input.input_ids[:, 1:], text_input.attention_mask[:, 1:], alpha=alpha)
@@ -379,7 +379,7 @@ class SPMM(pl.LightningModule):
         self.training_step_outputs.append(torch.tensor([loss_mlm, loss_mpm, loss_ita, loss_itm]))
         return torch.tensor([loss_mlm, loss_mpm, loss_ita, loss_itm])
 
-    def on_train_epoch_end(self):    # outputs: collection of returns from 'training_step'
+    def on_train_epoch_end(self):    # outputs：training_step 的返回结果集合
         tmp = torch.stack(self.training_step_outputs[-1000:]).mean(dim=0).tolist()
         if self.global_rank == 0:
             print(f'\n mean loss: {tmp[0]:.4f}, {tmp[1]:.4f}, {tmp[2]:.4f}, {tmp[3]:.4f}')
@@ -389,8 +389,8 @@ class SPMM(pl.LightningModule):
 @torch.no_grad()
 def concat_all_gather(tensor):
     """
-    Performs all_gather operation on the provided tensors.
-    *** Warning ***: torch.distributed.all_gather has no gradient.
+    对给定张量执行 all_gather 操作。
+    *** 注意 ***：torch.distributed.all_gather 不会保留梯度。
     """
     tensors_gather = [torch.ones_like(tensor) for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)

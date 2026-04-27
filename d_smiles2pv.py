@@ -28,14 +28,14 @@ def generate(model, prop_input, text_embeds, text_atts):
 
 @torch.no_grad()
 def pv_generate(model, data_loader):
-    # test
+    # 测试
     with open('./normalize.pkl', 'rb') as w:
         mean, std = pickle.load(w)
     device = model.device
     tokenizer = model.tokenizer
     model.eval()
     print("SMILES-to-PV generation...")
-    # convert list of string to dataloader
+    # 将字符串列表转换为可直接推理的输入
     if isinstance(data_loader, list):
         if data_loader[0][5] != "[CLS]":
             data_loader = ['[CLS]'+d for d in data_loader]
@@ -109,7 +109,7 @@ def metric_eval(ref, cand):
 def main(args, config):
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
+    # 固定随机种子以保证结果可复现
     seed = random.randint(0, 1000)
     print('seed:', seed)
     torch.manual_seed(seed)
@@ -117,7 +117,7 @@ def main(args, config):
     random.seed(seed)
     cudnn.benchmark = True
 
-    # === Dataset === #
+    # === 数据集 === #
     print("Creating dataset")
     dataset_test = SMILESDataset_pretrain(args.input_file)
     test_loader = DataLoader(dataset_test, batch_size=config['batch_size_test'], pin_memory=True, drop_last=False)
@@ -125,7 +125,7 @@ def main(args, config):
     tokenizer = BertTokenizer(vocab_file=args.vocab_filename, do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # === Model === #
+    # === 模型 === #
     print("Creating model")
     model = SPMM(config=config, tokenizer=tokenizer, no_train=True)
 

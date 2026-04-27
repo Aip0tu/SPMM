@@ -4,20 +4,20 @@ import torch
 
 
 class Scheduler:
-    """ Parameter Scheduler Base Class
-    A scheduler base class that can be used to schedule any optimizer parameter groups.
+    """参数调度器基类
+    该基类可用于调度任意优化器参数组。
 
-    Unlike the builtin PyTorch schedulers, this is intended to be consistently called
-    * At the END of each epoch, before incrementing the epoch count, to calculate next epoch's value
-    * At the END of each optimizer update, after incrementing the update count, to calculate next update's value
+    与 PyTorch 内置调度器不同，这里的设计约定为稳定地在以下时机调用：
+    * 每个 epoch 结束时，在 epoch 计数递增前，计算下一个 epoch 的值
+    * 每次优化器更新结束时，在 update 计数递增后，计算下一次更新的值
 
-    The schedulers built on this should try to remain as stateless as possible (for simplicity).
+    基于该类实现的调度器应尽量保持无状态，以简化使用。
 
-    This family of schedulers is attempting to avoid the confusion of the meaning of 'last_epoch'
-    and -1 values for special behaviour. All epoch and update counts must be tracked in the training
-    code and explicitly passed in to the schedulers on the corresponding step or step_update call.
+    这一组调度器旨在避免 `last_epoch` 以及特殊值 -1 所带来的语义混淆。
+    所有 epoch 与 update 计数都应由训练代码自行维护，并在调用 `step`
+    或 `step_update` 时显式传入。
 
-    Based on ideas from:
+    设计参考：
      * https://github.com/pytorch/fairseq/tree/master/fairseq/optim/lr_scheduler
      * https://github.com/allenai/allennlp/tree/master/allennlp/training/learning_rate_schedulers
     """
@@ -44,7 +44,7 @@ class Scheduler:
                 if self._initial_param_group_field not in group:
                     raise KeyError(f"{self._initial_param_group_field} missing from param_groups[{i}]")
         self.base_values = [group[self._initial_param_group_field] for group in self.optimizer.param_groups]
-        self.metric = None  # any point to having this for all?
+        self.metric = None  # 这里统一保留 metric 字段，便于子类按需使用
         self.noise_range_t = noise_range_t
         self.noise_pct = noise_pct
         self.noise_type = noise_type
@@ -95,7 +95,7 @@ class Scheduler:
                 g.manual_seed(self.noise_seed + t)
                 if self.noise_type == 'normal':
                     while True:
-                        # resample if noise out of percent limit, brute force but shouldn't spin much
+                        # 若噪声超出百分比限制则重新采样；虽然是穷举式重试，但通常不会循环太久
                         noise = torch.randn(1, generator=g).item()
                         if abs(noise) < self.noise_pct:
                             break

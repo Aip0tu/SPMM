@@ -338,7 +338,7 @@ class SMILESDataset_USPTO_reverse(Dataset):
 
     def __getitem__(self, index):
         d = self.data[index]
-        # r_type = d['reaction_type']
+        # r_type = d['reaction_type']  # 如需反应类型可在此读取
         p_mol = d['products_mol']
         r_mol = d['reactants_mol']
         do_aug = self.is_aug and random.random() > 0.5

@@ -16,19 +16,19 @@ from d_pv2smiles_single import generate, BinarySearch
 
 @torch.no_grad()
 def evaluate(model, data_loader, tokenizer, device, stochastic=False, k=2):
-    # test
+    # 测试
     print(f"PV-to-SMILES generation in {'stochastic' if stochastic else 'deterministic'} manner with k={k}...")
     model.eval()
     reference, candidate = [], []
     for (prop, text) in tqdm(data_loader):
         prop = prop.to(device, non_blocking=True)
-        property1 = model.property_embed(prop.unsqueeze(2))  # batch*12*feature
+        property1 = model.property_embed(prop.unsqueeze(2))  # 张量形状：批大小 * 12 * 特征维
         properties = torch.cat([model.property_cls.expand(property1.size(0), -1, -1), property1], dim=1)
-        prop_embeds = model.property_encoder(inputs_embeds=properties, return_dict=True).last_hidden_state  # batch*len(=patch**2+1)*feature
+        prop_embeds = model.property_encoder(inputs_embeds=properties, return_dict=True).last_hidden_state  # 张量形状：批大小 * 序列长度(=patch**2+1) * 特征维
 
         product_input = torch.tensor([tokenizer.cls_token_id]).expand(1, 1).to(device)
         values, indices = generate(model, prop_embeds, product_input, stochastic=stochastic, k=k)
-        # print(values, indices, values.size(), indices.size())
+        # 调试时可取消注释以打印候选得分与索引
         product_input = torch.cat([torch.tensor([tokenizer.cls_token_id]).expand(k, 1).to(device), indices.squeeze(0).unsqueeze(-1)], dim=-1)
         current_p = values.squeeze(0)
         final_output = []
@@ -55,7 +55,7 @@ def evaluate(model, data_loader, tokenizer, device, stochastic=False, k=2):
             cdd = tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(sentence[:-1])).replace('[CLS]', '')
             candidate_k.append(cdd)
         candidate.append(candidate_k[0])
-        # candidate.append(random.choice(candidate_k))
+        # 若需随机保留候选，可改为随机选择其中一个候选
     return reference, candidate
 
 
@@ -110,23 +110,23 @@ def metric_eval(ref, cand):
 def main(args, config):
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
+    # 固定随机种子以保证结果可复现
     seed = random.randint(0, 1000)
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     cudnn.benchmark = True
 
-    # ### Dataset ### #
+    # ### 数据集 ### #
     print("Creating dataset")
-    # dataset_test = SMILESDataset_pretrain(args.input_file, data_length=[0,100])
+    # 可使用输入文件构造测试集：SMILESDataset_pretrain(args.input_file, data_length=[0,100])
     dataset_test = SMILESDataset_pretrain('../VLP_chem/data/zinc15.smi', data_length=[3000, 4000])
     test_loader = DataLoader(dataset_test, batch_size=1, pin_memory=True, drop_last=False)
 
     tokenizer = BertTokenizer(vocab_file=args.vocab_filename, do_lower_case=False, do_basic_tokenize=False)
     tokenizer.wordpiece_tokenizer = WordpieceTokenizer(vocab=tokenizer.vocab, unk_token=tokenizer.unk_token, max_input_chars_per_word=250)
 
-    # === Model === #
+    # === 模型 === #
     print("Creating model")
     model = SPMM(config=config, tokenizer=tokenizer, no_train=True)
 

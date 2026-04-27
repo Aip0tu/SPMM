@@ -1,8 +1,8 @@
-""" Cosine Scheduler
+"""余弦调度器
 
-Cosine LR schedule with warmup, cycle/restarts, noise.
+带 warmup、周期/重启和噪声的余弦学习率调度。
 
-Hacked together by / Copyright 2020 Ross Wightman
+原作者 / 版权所有 2020 Ross Wightman
 """
 import logging
 import math
@@ -18,10 +18,10 @@ _logger = logging.getLogger(__name__)
 
 class CosineLRScheduler(Scheduler):
     """
-    Cosine decay with restarts.
-    This is described in the paper https://arxiv.org/abs/1608.03983.
+    带重启的余弦衰减。
+    相关方法可参考论文 https://arxiv.org/abs/1608.03983 。
 
-    Inspiration from
+    实现思路参考：
     https://github.com/allenai/allennlp/blob/master/allennlp/training/learning_rate_schedulers/cosine.py
     """
 
