@@ -93,6 +93,14 @@
 
     可选任务包括 `abs`、`emi`、`plqy` 和 `e`。脚本会分别编码荧光团与溶剂，再融合两者嵌入，并将最佳检查点保存到 `./output/FluoDB/`。
 
+    多任务版本会用一个模型同时预测 `abs`、`emi`、`plqy` 和 `e`，并使用分子-溶剂 token 级 cross-attention 与溶剂物化描述符增强融合：
+
+    ```
+    python d_fluodb_multitask.py --data_dir './FlourDB' --checkpoint './Pretrain/checkpoint_SPMM.ckpt' --device cuda
+    ```
+
+    如果有额外的溶剂物化性质表，可以通过 `--solvent_descriptor_file` 传入。CSV 至少需要 `solvent` 列，支持的描述符列包括 `dielectric_constant`、`polarity`、`refractive_index`、`hbond_donor`、`hbond_acceptor` 和 `ET30`。没有额外 CSV 时，脚本会自动计算一组 RDKit 溶剂描述符作为默认补充。
+
 7. 面向已训练 SPMM 回归器的 FluoDB 原子级解释
 
     在训练好目标相关模型后，可以通过原子级 token masking 估计哪些荧光团原子会推动预测性质升高或降低。下面给出发射模型的解释示例：
