@@ -50,7 +50,8 @@ class TeeStream:
 
 
 class SPMM_fluodb_multitask_regressor(nn.Module):
-    def __init__(self, tokenizer=None, config=None, solvent_desc_dim=9, n_targets=4):
+    def __init__(self, tokenizer=None, config=None, solvent_desc_dim=200,
+                 mol_desc_dim=200, mol_fp_dim=512, n_targets=4):
         super().__init__()
         self.tokenizer = tokenizer
         self.n_targets = n_targets
@@ -65,6 +66,15 @@ class SPMM_fluodb_multitask_regressor(nn.Module):
         fusion_heads = config.get('fusion_heads', 8)
         fusion_dropout = config.get('fusion_dropout', 0.1)
         solvent_desc_width = config.get('solvent_desc_width', 128)
+        mol_desc_width = config.get('mol_desc_width', 128)
+        mol_fp_width = config.get('mol_fp_width', 128)
+        mmoe_num_experts = config.get('mmoe_num_experts', 4)
+        mmoe_expert_width = config.get('mmoe_expert_width', text_width)
+        task_adapter_width = config.get('task_adapter_width', text_width)
+        if mmoe_num_experts < 1:
+            raise ValueError('mmoe_num_experts must be >= 1.')
+        if mmoe_expert_width < 1 or task_adapter_width < 1:
+            raise ValueError('mmoe_expert_width and task_adapter_width must be >= 1.')
 
         self.mol_to_solvent_attn = nn.MultiheadAttention(
             embed_dim=text_width,
@@ -86,17 +96,54 @@ class SPMM_fluodb_multitask_regressor(nn.Module):
             nn.GELU(),
             nn.LayerNorm(solvent_desc_width),
         )
+        self.mol_desc_proj = nn.Sequential(
+            nn.Linear(mol_desc_dim, mol_desc_width),
+            nn.GELU(),
+            nn.LayerNorm(mol_desc_width),
+        )
+        self.mol_fp_proj = nn.Sequential(
+            nn.Linear(mol_fp_dim, mol_fp_width),
+            nn.GELU(),
+            nn.LayerNorm(mol_fp_width),
+        )
 
-        fused_width = text_width * 6 + solvent_desc_width
+        fused_width = text_width * 6 + solvent_desc_width + mol_desc_width + mol_fp_width
+        self.fused_norm = nn.LayerNorm(fused_width)
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(fused_width, mmoe_expert_width),
+                nn.GELU(),
+                nn.Dropout(fusion_dropout),
+                nn.Linear(mmoe_expert_width, mmoe_expert_width),
+                nn.GELU(),
+                nn.Dropout(fusion_dropout),
+            )
+            for _ in range(mmoe_num_experts)
+        ])
+        self.task_gates = nn.ModuleList([
+            nn.Linear(fused_width, mmoe_num_experts)
+            for _ in range(n_targets)
+        ])
+        self.task_adapters = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(mmoe_expert_width, task_adapter_width),
+                nn.GELU(),
+                nn.Dropout(fusion_dropout),
+                nn.Linear(task_adapter_width, mmoe_expert_width),
+                nn.Dropout(fusion_dropout),
+            )
+            for _ in range(n_targets)
+        ])
+        self.task_adapter_norms = nn.ModuleList([
+            nn.LayerNorm(mmoe_expert_width)
+            for _ in range(n_targets)
+        ])
         self.reg_heads = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(fused_width, text_width * 2),
+                nn.Linear(mmoe_expert_width, task_adapter_width),
                 nn.GELU(),
                 nn.Dropout(fusion_dropout),
-                nn.Linear(text_width * 2, text_width),
-                nn.GELU(),
-                nn.Dropout(fusion_dropout),
-                nn.Linear(text_width, 1),
+                nn.Linear(task_adapter_width, 1),
             )
             for _ in range(n_targets)
         ])
@@ -110,7 +157,8 @@ class SPMM_fluodb_multitask_regressor(nn.Module):
         ).last_hidden_state
 
     def forward(self, smiles_input_ids, smiles_attention_mask, solvent_input_ids,
-                solvent_attention_mask, solvent_desc, value=None, target_mask=None, eval=False):
+                solvent_attention_mask, mol_desc, mol_fp, solvent_desc,
+                value=None, target_mask=None, eval=False):
         mol_tokens = self.encode_tokens(smiles_input_ids, smiles_attention_mask)
         solvent_tokens = self.encode_tokens(solvent_input_ids, solvent_attention_mask)
 
@@ -137,6 +185,8 @@ class SPMM_fluodb_multitask_regressor(nn.Module):
         mol_cls = mol_tokens[:, 0, :]
         solvent_cls = solvent_tokens[:, 0, :]
         solvent_desc_emb = self.solvent_desc_proj(solvent_desc)
+        mol_desc_emb = self.mol_desc_proj(mol_desc)
+        mol_fp_emb = self.mol_fp_proj(mol_fp)
         fused = torch.cat(
             [
                 mol_cls,
@@ -145,11 +195,23 @@ class SPMM_fluodb_multitask_regressor(nn.Module):
                 mol_cls * solvent_cls,
                 mol_context[:, 0, :],
                 solvent_context[:, 0, :],
+                mol_desc_emb,
+                mol_fp_emb,
                 solvent_desc_emb,
             ],
             dim=-1,
         )
-        pred = torch.cat([head(fused) for head in self.reg_heads], dim=-1)
+        fused = self.fused_norm(fused)
+        expert_outputs = torch.stack([expert(fused) for expert in self.experts], dim=1)
+        task_predictions = []
+        for task_idx in range(self.n_targets):
+            gate_weights = torch.softmax(self.task_gates[task_idx](fused), dim=-1).unsqueeze(-1)
+            task_repr = torch.sum(expert_outputs * gate_weights, dim=1)
+            task_repr = self.task_adapter_norms[task_idx](
+                task_repr + self.task_adapters[task_idx](task_repr)
+            )
+            task_predictions.append(self.reg_heads[task_idx](task_repr))
+        pred = torch.cat(task_predictions, dim=-1)
 
         if eval:
             return pred
@@ -195,10 +257,12 @@ def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device,
     warmup_iterations = warmup_steps * step_size
 
     tqdm_data_loader = tqdm(data_loader, miniters=print_freq, desc=header)
-    for i, (smiles, solvents, solvent_desc, value, target_mask) in enumerate(tqdm_data_loader):
+    for i, (smiles, solvents, mol_desc, mol_fp, solvent_desc, value, target_mask) in enumerate(tqdm_data_loader):
         optimizer.zero_grad()
         value = value.to(device, non_blocking=True)
         target_mask = target_mask.to(device, non_blocking=True)
+        mol_desc = mol_desc.to(device, non_blocking=True)
+        mol_fp = mol_fp.to(device, non_blocking=True)
         solvent_desc = solvent_desc.to(device, non_blocking=True)
         smiles_input, solvent_input = tokenize_pair(
             tokenizer,
@@ -214,6 +278,8 @@ def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device,
             smiles_input.attention_mask[:, 1:],
             solvent_input.input_ids[:, 1:],
             solvent_input.attention_mask[:, 1:],
+            mol_desc,
+            mol_fp,
             solvent_desc,
             eval=True,
         )
@@ -233,8 +299,10 @@ def evaluate(model, data_loader, tokenizer, device, denormalize, max_length_smil
     preds = []
     answers = []
     masks = []
-    for smiles, solvents, solvent_desc, value, target_mask in data_loader:
+    for smiles, solvents, mol_desc, mol_fp, solvent_desc, value, target_mask in data_loader:
         value = value.to(device, non_blocking=True)
+        mol_desc = mol_desc.to(device, non_blocking=True)
+        mol_fp = mol_fp.to(device, non_blocking=True)
         solvent_desc = solvent_desc.to(device, non_blocking=True)
         smiles_input, solvent_input = tokenize_pair(
             tokenizer,
@@ -249,6 +317,8 @@ def evaluate(model, data_loader, tokenizer, device, denormalize, max_length_smil
             smiles_input.attention_mask[:, 1:],
             solvent_input.input_ids[:, 1:],
             solvent_input.attention_mask[:, 1:],
+            mol_desc,
+            mol_fp,
             solvent_desc,
             eval=True,
         )
@@ -327,8 +397,26 @@ def resolve_log_file(args):
     return log_path
 
 
+def resolve_device(device_name):
+    requested = (device_name or 'auto').lower()
+    if requested == 'auto':
+        resolved = 'cuda' if torch.cuda.is_available() else 'cpu'
+    elif requested.startswith('cuda') and not torch.cuda.is_available():
+        print(f'WARNING: requested device "{device_name}" but CUDA is not available. Falling back to CPU.')
+        resolved = 'cpu'
+    else:
+        resolved = device_name
+
+    device = torch.device(resolved)
+    if device.type == 'cuda':
+        print('DEVICE:', device, torch.cuda.get_device_name(device))
+    else:
+        print('DEVICE:', device)
+    return device
+
+
 def main(args, config):
-    device = torch.device(args.device)
+    device = resolve_device(args.device)
     print('DATA DIR:', args.data_dir)
     print('MULTITASK TARGETS:', ', '.join(SMILESDataset_FluoDB_MultiTask.target_names))
     print('TARGET TRANSFORMS:', SMILESDataset_FluoDB_MultiTask.target_transform_config)
@@ -337,6 +425,9 @@ def main(args, config):
         args.data_dir,
         split='train',
         solvent_descriptor_file=args.solvent_descriptor_file,
+        split_strategy=args.split_strategy,
+        split_seed=args.split_seed,
+        split_ratios=args.split_ratios,
         shuffle=True,
     )
     dataset_val = SMILESDataset_FluoDB_MultiTask(
@@ -346,7 +437,12 @@ def main(args, config):
         value_std=dataset_train.value_std,
         solvent_desc_mean=dataset_train.solvent_desc_mean,
         solvent_desc_std=dataset_train.solvent_desc_std,
+        mol_desc_mean=dataset_train.mol_desc_mean,
+        mol_desc_std=dataset_train.mol_desc_std,
         solvent_descriptor_file=args.solvent_descriptor_file,
+        split_strategy=args.split_strategy,
+        split_seed=args.split_seed,
+        split_ratios=args.split_ratios,
     )
     dataset_test = SMILESDataset_FluoDB_MultiTask(
         args.data_dir,
@@ -355,17 +451,32 @@ def main(args, config):
         value_std=dataset_train.value_std,
         solvent_desc_mean=dataset_train.solvent_desc_mean,
         solvent_desc_std=dataset_train.solvent_desc_std,
+        mol_desc_mean=dataset_train.mol_desc_mean,
+        mol_desc_std=dataset_train.mol_desc_std,
         solvent_descriptor_file=args.solvent_descriptor_file,
+        split_strategy=args.split_strategy,
+        split_seed=args.split_seed,
+        split_ratios=args.split_ratios,
     )
 
     print(len(dataset_train), len(dataset_val), len(dataset_test))
+    print('split strategy:', args.split_strategy, 'ratios:', args.split_ratios, 'seed:', args.split_seed)
+    print('molecule descriptor dim:', dataset_train.mol_desc_dim)
+    print('molecule fingerprint dim:', dataset_train.mol_fp_dim)
     print('solvent descriptor dim:', dataset_train.solvent_desc_dim)
+    print(
+        'MMoE:',
+        'experts=', config['mmoe_num_experts'],
+        'expert_width=', config['mmoe_expert_width'],
+        'adapter_width=', config['task_adapter_width'],
+    )
+    pin_memory = device.type == 'cuda'
 
     train_loader = DataLoader(
         dataset_train,
         batch_size=config['batch_size_train'],
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=True,
         shuffle=True,
     )
@@ -373,14 +484,14 @@ def main(args, config):
         dataset_val,
         batch_size=config['batch_size_test'],
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=False,
     )
     test_loader = DataLoader(
         dataset_test,
         batch_size=config['batch_size_test'],
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=False,
     )
 
@@ -390,13 +501,15 @@ def main(args, config):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    cudnn.benchmark = True
+    cudnn.benchmark = device.type == 'cuda'
 
     print('Creating multitask model')
     model = SPMM_fluodb_multitask_regressor(
         config=config,
         tokenizer=tokenizer,
         solvent_desc_dim=dataset_train.solvent_desc_dim,
+        mol_desc_dim=dataset_train.mol_desc_dim,
+        mol_fp_dim=dataset_train.mol_fp_dim,
         n_targets=len(SMILESDataset_FluoDB_MultiTask.target_names),
     )
     print('#parameters:', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -480,6 +593,26 @@ def main(args, config):
                 'solvent_desc_mean': dataset_train.solvent_desc_mean,
                 'solvent_desc_std': dataset_train.solvent_desc_std,
                 'solvent_desc_dim': dataset_train.solvent_desc_dim,
+                'mol_desc_mean': dataset_train.mol_desc_mean,
+                'mol_desc_std': dataset_train.mol_desc_std,
+                'mol_desc_dim': dataset_train.mol_desc_dim,
+                'mol_fp_dim': dataset_train.mol_fp_dim,
+                'rdkit_descriptor_names': SMILESDataset_FluoDB_MultiTask.rdkit_descriptor_names,
+                'fingerprint': {
+                    'type': 'morgan',
+                    'radius': 2,
+                    'n_bits': SMILESDataset_FluoDB_MultiTask.fingerprint_n_bits,
+                },
+                'model_arch': {
+                    'fusion': 'cross_attention_descriptor_concat',
+                    'multitask_head': 'mmoe_task_specific_adapter',
+                    'mmoe_num_experts': config['mmoe_num_experts'],
+                    'mmoe_expert_width': config['mmoe_expert_width'],
+                    'task_adapter_width': config['task_adapter_width'],
+                },
+                'split_strategy': args.split_strategy,
+                'split_seed': args.split_seed,
+                'split_ratios': args.split_ratios,
             }
             save_path = os.path.join(args.output_dir, 'multitask_best.pth')
             torch.save(save_obj, save_path)
@@ -501,8 +634,11 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default='./Pretrain/checkpoint_SPMM.ckpt')
     parser.add_argument('--output_dir', default='./output/FluoDB')
     parser.add_argument('--solvent_descriptor_file', default='', help='Optional CSV with solvent and physical descriptor columns.')
+    parser.add_argument('--split_strategy', default='scaffold', choices=['existing', 'scaffold'])
+    parser.add_argument('--split_seed', default=42, type=int)
+    parser.add_argument('--split_ratios', default=[0.8, 0.1, 0.1], nargs=3, type=float)
     parser.add_argument('--vocab_filename', default='./vocab_bpe_300.txt')
-    parser.add_argument('--device', default='cuda')
+    parser.add_argument('--device', default='auto', help='Device to use: auto, cpu, cuda, or cuda:N.')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--lr', default=5e-5, type=float)
     parser.add_argument('--min_lr', default=3e-6, type=float)
@@ -513,6 +649,11 @@ if __name__ == '__main__':
     parser.add_argument('--max_length_solvent', default=64, type=int)
     parser.add_argument('--fusion_heads', default=8, type=int)
     parser.add_argument('--solvent_desc_width', default=128, type=int)
+    parser.add_argument('--mol_desc_width', default=128, type=int)
+    parser.add_argument('--mol_fp_width', default=128, type=int)
+    parser.add_argument('--mmoe_num_experts', default=4, type=int)
+    parser.add_argument('--mmoe_expert_width', default=256, type=int)
+    parser.add_argument('--task_adapter_width', default=256, type=int)
     parser.add_argument('--loss', default='mse', choices=['mse', 'huber'])
     parser.add_argument('--freeze_encoder', action='store_true')
     parser.add_argument('--log_file', default='', help='Path to save the training log. Defaults to output_dir/multitask_train_TIMESTAMP.log.')
@@ -526,6 +667,11 @@ if __name__ == '__main__':
         'fusion_heads': args.fusion_heads,
         'fusion_dropout': 0.1,
         'solvent_desc_width': args.solvent_desc_width,
+        'mol_desc_width': args.mol_desc_width,
+        'mol_fp_width': args.mol_fp_width,
+        'mmoe_num_experts': args.mmoe_num_experts,
+        'mmoe_expert_width': args.mmoe_expert_width,
+        'task_adapter_width': args.task_adapter_width,
         'schedular': {
             'sched': 'cosine',
             'lr': args.lr,

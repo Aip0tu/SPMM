@@ -3,8 +3,11 @@ import torch
 import random
 import pandas as pd
 import os
+import math
 from rdkit import Chem
-from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, Descriptors
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.ML.Descriptors import MoleculeDescriptors
 import pickle
 from rdkit import RDLogger
 from calc_property import calculate_property
@@ -13,6 +16,15 @@ try:
 except ImportError:
     MolAugmenter = None
 RDLogger.DisableLog('rdApp.*')
+
+FLUODB_RDKIT_DESCRIPTOR_COUNT = 200
+FLUODB_RDKIT_DESCRIPTOR_ITEMS = [
+    item for item in Descriptors.descList if item[0] != 'Ipc'
+][:FLUODB_RDKIT_DESCRIPTOR_COUNT]
+FLUODB_RDKIT_DESCRIPTOR_NAMES = [name for name, _ in FLUODB_RDKIT_DESCRIPTOR_ITEMS]
+FLUODB_RDKIT_DESCRIPTOR_CALCULATOR = MoleculeDescriptors.MolecularDescriptorCalculator(
+    FLUODB_RDKIT_DESCRIPTOR_NAMES
+)
 
 
 class SMILESDataset_pretrain(Dataset):
@@ -293,6 +305,13 @@ class SMILESDataset_FluoDB(Dataset):
 
 class SMILESDataset_FluoDB_MultiTask(Dataset):
     target_names = ['abs', 'emi', 'plqy', 'e']
+    rdkit_descriptor_count = FLUODB_RDKIT_DESCRIPTOR_COUNT
+    rdkit_descriptor_names = FLUODB_RDKIT_DESCRIPTOR_NAMES
+    rdkit_descriptor_calculator = FLUODB_RDKIT_DESCRIPTOR_CALCULATOR
+    fingerprint_n_bits = 512
+    _scaffold_split_cache = {}
+    _rdkit_descriptor_cache = {}
+    _fingerprint_cache = {}
     lite_target_columns = {
         'abs': 'absorption/nm',
         'emi': 'emission/nm',
@@ -316,17 +335,23 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
 
     def __init__(self, data_dir, split='train', value_mean=None, value_std=None,
                  solvent_desc_mean=None, solvent_desc_std=None, solvent_descriptor_file=None,
-                 shuffle=False):
+                 mol_desc_mean=None, mol_desc_std=None, split_strategy='existing',
+                 split_seed=42, split_ratios=(0.8, 0.1, 0.1), shuffle=False):
         self.split = split
         self.data_dir = data_dir
         self.solvent_descriptor_file = solvent_descriptor_file
-        data = self._load_split(data_dir, split)
+        self.split_strategy = split_strategy
+        data = self._load_split(data_dir, split, split_strategy, split_seed, split_ratios)
         solvent_descriptor_table = self._load_solvent_descriptor_table(solvent_descriptor_file)
 
         self.data = []
         values = []
         masks = []
         solvent_descs = []
+        mol_descs = []
+        mol_fps = []
+        mol_feature_cache = {}
+        solvent_desc_cache = {}
         for i in range(len(data)):
             row = data.iloc[i]
             if pd.isna(row['smiles']) or pd.isna(row['solvent']):
@@ -343,11 +368,25 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
             if not any(target_mask):
                 continue
 
-            solvent_desc = self._build_solvent_descriptor(solvent_mol, solvent, solvent_descriptor_table)
+            if solvent not in solvent_desc_cache:
+                solvent_desc_cache[solvent] = self._build_solvent_descriptor(
+                    solvent_mol,
+                    solvent,
+                    solvent_descriptor_table,
+                )
+            if smiles not in mol_feature_cache:
+                mol_feature_cache[smiles] = (
+                    self._build_rdkit_descriptor(mol),
+                    self._build_morgan_fingerprint(mol),
+                )
+            solvent_desc = solvent_desc_cache[solvent]
+            mol_desc, mol_fp = mol_feature_cache[smiles]
             self.data.append((smiles, solvent))
             values.append(target_values)
             masks.append(target_mask)
             solvent_descs.append(solvent_desc)
+            mol_descs.append(mol_desc)
+            mol_fps.append(mol_fp)
 
         if not self.data:
             raise ValueError(f'No valid FluoDB multitask samples found for split "{split}" in {data_dir}.')
@@ -356,6 +395,8 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
         target_masks = torch.tensor(masks, dtype=torch.bool)
         transformed_values = self.transform_targets(raw_values)
         raw_solvent_desc = torch.tensor(solvent_descs, dtype=torch.float)
+        raw_mol_desc = torch.tensor(mol_descs, dtype=torch.float)
+        raw_mol_fp = torch.tensor(mol_fps, dtype=torch.float)
 
         if value_mean is None or value_std is None:
             means, stds = [], []
@@ -382,13 +423,24 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
             self.solvent_desc_mean = torch.as_tensor(solvent_desc_mean, dtype=torch.float)
             self.solvent_desc_std = torch.as_tensor(solvent_desc_std, dtype=torch.float)
 
+        if mol_desc_mean is None or mol_desc_std is None:
+            self.mol_desc_mean = raw_mol_desc.mean(dim=0)
+            self.mol_desc_std = raw_mol_desc.std(dim=0, unbiased=False)
+            self.mol_desc_std[self.mol_desc_std == 0] = 1.0
+        else:
+            self.mol_desc_mean = torch.as_tensor(mol_desc_mean, dtype=torch.float)
+            self.mol_desc_std = torch.as_tensor(mol_desc_std, dtype=torch.float)
+
         normalized_values = (transformed_values - self.value_mean) / self.value_std
         normalized_values = torch.where(target_masks, normalized_values, torch.zeros_like(normalized_values))
         normalized_solvent_desc = (raw_solvent_desc - self.solvent_desc_mean) / self.solvent_desc_std
+        normalized_mol_desc = (raw_mol_desc - self.mol_desc_mean) / self.mol_desc_std
 
         self.values = normalized_values
         self.target_masks = target_masks.float()
         self.solvent_descs = normalized_solvent_desc
+        self.mol_descs = normalized_mol_desc
+        self.mol_fps = raw_mol_fp
 
         if shuffle:
             order = list(range(len(self.data)))
@@ -397,13 +449,32 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
             self.values = self.values[order]
             self.target_masks = self.target_masks[order]
             self.solvent_descs = self.solvent_descs[order]
+            self.mol_descs = self.mol_descs[order]
+            self.mol_fps = self.mol_fps[order]
 
-    def _load_split(self, data_dir, split):
+    def _load_split(self, data_dir, split, split_strategy='existing', split_seed=42, split_ratios=(0.8, 0.1, 0.1)):
+        if split_strategy == 'scaffold':
+            split_key = 'valid' if split == 'val' else split
+            ratios = tuple(float(r) for r in split_ratios)
+            cache_key = (os.path.abspath(data_dir), int(split_seed), ratios)
+            if cache_key not in self._scaffold_split_cache:
+                data = self._load_all_data(data_dir)
+                self._scaffold_split_cache[cache_key] = self._build_scaffold_split_map(
+                    data,
+                    split_seed,
+                    ratios,
+                )
+            if split_key not in self._scaffold_split_cache[cache_key]:
+                raise ValueError(f'Unknown split: {split}')
+            return self._scaffold_split_cache[cache_key][split_key].copy()
+        if split_strategy != 'existing':
+            raise ValueError(f'Unknown split_strategy: {split_strategy}')
+
         lite_path = os.path.join(data_dir, 'FluoDB-Lite.csv')
         if os.path.exists(lite_path):
             data = pd.read_csv(lite_path)
             if 'split' not in data.columns:
-                raise ValueError(f'{lite_path} must contain a split column.')
+                raise ValueError(f'{lite_path} must contain a split column or use split_strategy="scaffold".')
             data = data[data['split'].astype(str).str.lower() == split.lower()].copy()
             data = data.rename(columns={v: k for k, v in self.lite_target_columns.items()})
             return data[['smiles', 'solvent'] + self.target_names]
@@ -422,6 +493,90 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
         if merged is None:
             raise FileNotFoundError(f'Cannot find FluoDB-Lite.csv or per-target {split} CSV files in {data_dir}.')
         return merged
+
+    def _load_all_data(self, data_dir):
+        lite_path = os.path.join(data_dir, 'FluoDB-Lite.csv')
+        if os.path.exists(lite_path):
+            data = pd.read_csv(lite_path)
+            data = data.rename(columns={v: k for k, v in self.lite_target_columns.items()})
+            return data[['smiles', 'solvent'] + self.target_names]
+
+        merged = None
+        for target in self.target_names:
+            frames = []
+            for split in ['train', 'valid', 'test']:
+                path = os.path.join(data_dir, f'{target}_{split}.csv')
+                if not os.path.exists(path):
+                    continue
+                data = pd.read_csv(path)
+                if target not in data.columns:
+                    raise ValueError(f'{path} must contain a {target} column.')
+                frames.append(data[['smiles', 'solvent', target]])
+            if not frames:
+                continue
+            target_data = pd.concat(frames, ignore_index=True)
+            target_data = target_data.groupby(['smiles', 'solvent'], as_index=False)[target].mean()
+            merged = target_data if merged is None else merged.merge(target_data, on=['smiles', 'solvent'], how='outer')
+
+        if merged is None:
+            raise FileNotFoundError(f'Cannot find FluoDB-Lite.csv or per-target CSV files in {data_dir}.')
+        return merged
+
+    def _apply_scaffold_split(self, data, split, split_seed, split_ratios):
+        split = 'valid' if split == 'val' else split
+        split_map = self._build_scaffold_split_map(data, split_seed, split_ratios)
+        if split not in split_map:
+            raise ValueError(f'Unknown split: {split}')
+        return split_map[split].copy()
+
+    def _build_scaffold_split_map(self, data, split_seed, split_ratios):
+        ratios = [float(r) for r in split_ratios]
+        if len(ratios) != 3 or sum(ratios) <= 0:
+            raise ValueError('split_ratios must contain three positive values.')
+        ratio_sum = sum(ratios)
+        ratios = [r / ratio_sum for r in ratios]
+
+        groups = {}
+        for idx, row in data.iterrows():
+            if pd.isna(row['smiles']):
+                continue
+            scaffold = self._scaffold_key(row['smiles'])
+            groups.setdefault(scaffold, []).append(idx)
+
+        grouped = list(groups.items())
+        rng = random.Random(split_seed)
+        rng.shuffle(grouped)
+        grouped.sort(key=lambda item: len(item[1]), reverse=True)
+
+        names = ['train', 'valid', 'test']
+        desired = {
+            'train': int(round(len(data) * ratios[0])),
+            'valid': int(round(len(data) * ratios[1])),
+        }
+        desired['test'] = max(0, len(data) - desired['train'] - desired['valid'])
+        split_indices = {name: [] for name in names}
+
+        for _, indices in grouped:
+            target_split = max(
+                names,
+                key=lambda name: desired[name] - len(split_indices[name]),
+            )
+            split_indices[target_split].extend(indices)
+
+        return {
+            name: data.loc[sorted(indices)].reset_index(drop=True)
+            for name, indices in split_indices.items()
+        }
+
+    @staticmethod
+    def _scaffold_key(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return str(smiles)
+        scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=mol, includeChirality=False)
+        if scaffold:
+            return scaffold
+        return Chem.MolToSmiles(mol, isomericSmiles=False, canonical=True)
 
     def _load_solvent_descriptor_table(self, solvent_descriptor_file):
         if not solvent_descriptor_file:
@@ -493,18 +648,38 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
 
         return restored.squeeze(0) if was_1d else restored
 
+    @classmethod
+    def _build_rdkit_descriptor(cls, mol):
+        key = Chem.MolToSmiles(mol, isomericSmiles=False, canonical=True)
+        if key in cls._rdkit_descriptor_cache:
+            return list(cls._rdkit_descriptor_cache[key])
+
+        desc = []
+        try:
+            values = cls.rdkit_descriptor_calculator.CalcDescriptors(mol)
+        except Exception:
+            values = [0.0] * cls.rdkit_descriptor_count
+        for value in values:
+            value = float(value)
+            if not math.isfinite(value):
+                value = 0.0
+            desc.append(value)
+        cls._rdkit_descriptor_cache[key] = tuple(desc)
+        return desc
+
+    @classmethod
+    def _build_morgan_fingerprint(cls, mol):
+        key = Chem.MolToSmiles(mol, isomericSmiles=False, canonical=True)
+        if key in cls._fingerprint_cache:
+            return list(cls._fingerprint_cache[key])
+
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=cls.fingerprint_n_bits)
+        bits = [float(bit) for bit in fp.ToBitString()]
+        cls._fingerprint_cache[key] = tuple(bits)
+        return bits
+
     def _build_solvent_descriptor(self, solvent_mol, solvent, solvent_descriptor_table):
-        rdkit_desc = [
-            Descriptors.MolWt(solvent_mol),
-            Descriptors.MolLogP(solvent_mol),
-            Descriptors.MolMR(solvent_mol),
-            Descriptors.TPSA(solvent_mol),
-            float(Descriptors.NumHDonors(solvent_mol)),
-            float(Descriptors.NumHAcceptors(solvent_mol)),
-            float(Descriptors.NOCount(solvent_mol)),
-            float(Descriptors.FractionCSP3(solvent_mol)),
-            float(Descriptors.HeavyAtomCount(solvent_mol)),
-        ]
+        rdkit_desc = self._build_rdkit_descriptor(solvent_mol)
         if not solvent_descriptor_table:
             return rdkit_desc
 
@@ -518,6 +693,14 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
     def solvent_desc_dim(self):
         return int(self.solvent_descs.size(1))
 
+    @property
+    def mol_desc_dim(self):
+        return int(self.mol_descs.size(1))
+
+    @property
+    def mol_fp_dim(self):
+        return int(self.mol_fps.size(1))
+
     def __len__(self):
         return len(self.data)
 
@@ -526,6 +709,8 @@ class SMILESDataset_FluoDB_MultiTask(Dataset):
         return (
             '[CLS]' + smiles,
             '[CLS]' + solvent,
+            self.mol_descs[index],
+            self.mol_fps[index],
             self.solvent_descs[index],
             self.values[index],
             self.target_masks[index],
